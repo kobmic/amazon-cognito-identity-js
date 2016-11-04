@@ -123,7 +123,7 @@ export default class CognitoUserPool {
    */
   getCurrentUser() {
     const lastUserKey = `CognitoIdentityServiceProvider.${this.clientId}.LastAuthUser`;
-    const storage = window.localStorage;
+    const storage = window.sessionStorage;
 
     const lastAuthUser = storage.getItem(lastUserKey);
     if (lastAuthUser) {
