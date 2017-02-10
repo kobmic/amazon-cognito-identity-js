@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import * as sjcl from 'sjcl';
+import { util } from 'aws-sdk';
 import { BigInteger } from 'jsbn';
 
 import AuthenticationHelper from './AuthenticationHelper';
@@ -25,6 +25,7 @@ import CognitoRefreshToken from './CognitoRefreshToken';
 import CognitoUserSession from './CognitoUserSession';
 import DateHelper from './DateHelper';
 import CognitoUserAttribute from './CognitoUserAttribute';
+import StorageHelper from './StorageHelper';
 
 /**
  * @callback nodeCallback
@@ -136,8 +137,7 @@ export default class CognitoUser {
    */
   authenticateUser(authDetails, callback) {
     const authenticationHelper = new AuthenticationHelper(
-      this.pool.getUserPoolId().split('_')[1],
-      this.pool.getParanoia());
+      this.pool.getUserPoolId().split('_')[1]);
     const dateHelper = new DateHelper();
 
     let serverBValue;
@@ -177,16 +177,15 @@ export default class CognitoUser {
         authDetails.getPassword(),
         serverBValue,
         salt);
-      const secretBlockBits = sjcl.codec.base64.toBits(challengeParameters.SECRET_BLOCK);
 
-      const mac = new sjcl.misc.hmac(hkdf, sjcl.hash.sha256);
-      mac.update(sjcl.codec.utf8String.toBits(this.pool.getUserPoolId().split('_')[1]));
-      mac.update(sjcl.codec.utf8String.toBits(this.username));
-      mac.update(secretBlockBits);
       const dateNow = dateHelper.getNowString();
-      mac.update(sjcl.codec.utf8String.toBits(dateNow));
-      const signature = mac.digest();
-      const signatureString = sjcl.codec.base64.fromBits(signature);
+
+      const signatureString = util.crypto.hmac(hkdf, util.buffer.concat([
+        new util.Buffer(this.pool.getUserPoolId().split('_')[1], 'utf8'),
+        new util.Buffer(this.username, 'utf8'),
+        new util.Buffer(challengeParameters.SECRET_BLOCK, 'base64'),
+        new util.Buffer(dateNow, 'utf8')
+      ]), 'base64', 'sha256')
 
       const challengeResponses = {};
 
@@ -199,7 +198,22 @@ export default class CognitoUser {
         challengeResponses.DEVICE_KEY = this.deviceKey;
       }
 
-      this.client.makeUnauthenticatedRequest('respondToAuthChallenge', {
+      const respondToAuthChallenge = (challenge, challengeCallback) =>
+        this.client.makeUnauthenticatedRequest('respondToAuthChallenge', challenge,
+          (errChallenge, dataChallenge) => {
+            if (errChallenge && errChallenge.code === 'ResourceNotFoundException' &&
+                errChallenge.message.toLowerCase().indexOf('device') !== -1) {
+              challengeResponses.DEVICE_KEY = null;
+              this.deviceKey = null;
+              this.randomPassword = null;
+              this.deviceGroupKey = null;
+              this.clearCachedDeviceKeyAndPassword();
+              return respondToAuthChallenge(challenge, challengeCallback);
+            }
+            return challengeCallback(errChallenge, dataChallenge);
+          });
+
+      respondToAuthChallenge({
         ChallengeName: 'PASSWORD_VERIFIER',
         ClientId: this.pool.getClientId(),
         ChallengeResponses: challengeResponses,
@@ -248,14 +262,16 @@ export default class CognitoUser {
   */
   authenticateUserInternal(dataAuthenticate, authenticationHelper, callback) {
     const challengeName = dataAuthenticate.ChallengeName;
+    const challengeParameters = dataAuthenticate.ChallengeParameters;
+
     if (challengeName === 'SMS_MFA') {
       this.Session = dataAuthenticate.Session;
-      return callback.mfaRequired(challengeName);
+      return callback.mfaRequired(challengeName, challengeParameters);
     }
 
     if (challengeName === 'CUSTOM_CHALLENGE') {
       this.Session = dataAuthenticate.Session;
-      return callback.customChallenge(dataAuthenticate.ChallengeParameters);
+      return callback.customChallenge(challengeParameters);
     }
 
     if (challengeName === 'DEVICE_SRP_AUTH') {
@@ -276,14 +292,11 @@ export default class CognitoUser {
       dataAuthenticate.AuthenticationResult.NewDeviceMetadata.DeviceKey);
 
     const deviceSecretVerifierConfig = {
-      Salt: sjcl.codec.base64.fromBits(sjcl.codec.hex.toBits(
-              authenticationHelper.getSaltDevices().toString(16))),
-      PasswordVerifier: sjcl.codec.base64.fromBits(sjcl.codec.hex.toBits(
-              authenticationHelper.getVerifierDevices().toString(16))),
+      Salt: new util.Buffer(authenticationHelper.getSaltDevices(), 'hex').toString('base64'),
+      PasswordVerifier: new util.Buffer(authenticationHelper.getVerifierDevices(), 'hex').toString('base64'),
     };
 
-    this.verifierDevices = sjcl.codec.base64.fromBits(
-      authenticationHelper.getVerifierDevices());
+    this.verifierDevices = deviceSecretVerifierConfig.PasswordVerifier;
     this.deviceGroupKey = newDeviceMetadata.DeviceGroupKey;
     this.randomPassword = authenticationHelper.getRandomPassword();
 
@@ -324,10 +337,10 @@ export default class CognitoUser {
   */
   completeNewPasswordChallenge(newPassword, requiredAttributeData, callback) {
     if (!newPassword) {
-      return callback.onFailure('New password is required.');
+      return callback.onFailure(new Error('New password is required.'));
     }
     const authenticationHelper = new AuthenticationHelper(
-      this.pool.getUserPoolId().split('_')[1], this.pool.getParanoia());
+      this.pool.getUserPoolId().split('_')[1]);
     const userAttributesPrefix = authenticationHelper
       .getNewPasswordRequiredChallengeUserAttributePrefix();
 
@@ -366,8 +379,7 @@ export default class CognitoUser {
    */
   getDeviceResponse(callback) {
     const authenticationHelper = new AuthenticationHelper(
-      this.deviceGroupKey,
-      this.pool.getParanoia());
+      this.deviceGroupKey);
     const dateHelper = new DateHelper();
 
     const authParameters = {};
@@ -395,16 +407,15 @@ export default class CognitoUser {
         this.randomPassword,
         serverBValue,
         salt);
-      const secretBlockBits = sjcl.codec.base64.toBits(challengeParameters.SECRET_BLOCK);
 
-      const mac = new sjcl.misc.hmac(hkdf, sjcl.hash.sha256);
-      mac.update(sjcl.codec.utf8String.toBits(this.deviceGroupKey));
-      mac.update(sjcl.codec.utf8String.toBits(this.deviceKey));
-      mac.update(secretBlockBits);
       const dateNow = dateHelper.getNowString();
-      mac.update(sjcl.codec.utf8String.toBits(dateNow));
-      const signature = mac.digest();
-      const signatureString = sjcl.codec.base64.fromBits(signature);
+
+      const signatureString = util.crypto.hmac(hkdf, util.buffer.concat([
+        new util.Buffer(this.deviceGroupKey, 'utf8'),
+        new util.Buffer(this.deviceKey, 'utf8'),
+        new util.Buffer(challengeParameters.SECRET_BLOCK, 'base64'),
+        new util.Buffer(dateNow, 'utf8')
+      ]), 'base64', 'sha256')
 
       const challengeResponses = {};
 
@@ -483,7 +494,7 @@ export default class CognitoUser {
 
       if (challengeName === 'CUSTOM_CHALLENGE') {
         this.Session = data.Session;
-        return callback.customChallenge(data.challengeParameters);
+        return callback.customChallenge(data.ChallengeParameters);
       }
 
       this.signInUserSession = this.getCognitoUserSession(data.AuthenticationResult);
@@ -534,21 +545,17 @@ export default class CognitoUser {
       }
 
       const authenticationHelper = new AuthenticationHelper(
-        this.pool.getUserPoolId().split('_')[1],
-        this.pool.getParanoia());
+        this.pool.getUserPoolId().split('_')[1]);
       authenticationHelper.generateHashDevice(
         dataAuthenticate.AuthenticationResult.NewDeviceMetadata.DeviceGroupKey,
         dataAuthenticate.AuthenticationResult.NewDeviceMetadata.DeviceKey);
 
       const deviceSecretVerifierConfig = {
-        Salt: sjcl.codec.base64.fromBits(sjcl.codec.hex.toBits(
-          authenticationHelper.getSaltDevices().toString(16))),
-        PasswordVerifier: sjcl.codec.base64.fromBits(sjcl.codec.hex.toBits(
-          authenticationHelper.getVerifierDevices().toString(16))),
+        Salt: new util.Buffer(authenticationHelper.getSaltDevices(), 'hex').toString('base64'),
+        PasswordVerifier: new util.Buffer(authenticationHelper.getVerifierDevices(), 'hex').toString('base64'),
       };
 
-      this.verifierDevices = sjcl.codec.base64.fromBits(
-        authenticationHelper.getVerifierDevices());
+      this.verifierDevices = deviceSecretVerifierConfig.PasswordVerifier;
       this.deviceGroupKey = dataAuthenticate.AuthenticationResult
         .NewDeviceMetadata.DeviceGroupKey;
       this.randomPassword = authenticationHelper.getRandomPassword();
@@ -671,6 +678,7 @@ export default class CognitoUser {
       if (err) {
         return callback(err, null);
       }
+      this.clearCachedTokens();
       return callback(null, 'SUCCESS');
     });
     return undefined;
@@ -736,6 +744,28 @@ export default class CognitoUser {
   }
 
   /**
+   * This is used by an authenticated user to get the MFAOptions
+   * @param {nodeCallback<MFAOptions>} callback Called on success or error.
+   * @returns {void}
+   */
+  getMFAOptions(callback) {
+    if (!(this.signInUserSession != null && this.signInUserSession.isValid())) {
+      return callback(new Error('User is not authenticated'), null);
+    }
+
+    this.client.makeUnauthenticatedRequest('getUser', {
+      AccessToken: this.signInUserSession.getAccessToken().getJwtToken(),
+    }, (err, userData) => {
+      if (err) {
+        return callback(err, null);
+      }
+
+      return callback(null, userData.MFAOptions);
+    });
+    return undefined;
+  }
+
+  /**
    * This is used by an authenticated user to delete a list of attributes
    * @param {string[]} attributeList Names of the attributes to delete.
    * @param {nodeCallback<string>} callback Called on success or error.
@@ -796,7 +826,7 @@ export default class CognitoUser {
     const accessTokenKey = `${keyPrefix}.accessToken`;
     const refreshTokenKey = `${keyPrefix}.refreshToken`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     if (storage.getItem(idTokenKey)) {
       const idToken = new CognitoIdToken({
@@ -841,7 +871,7 @@ export default class CognitoUser {
     authParameters.REFRESH_TOKEN = refreshToken.getToken();
     const keyPrefix = `CognitoIdentityServiceProvider.${this.pool.getClientId()}`;
     const lastUserKey = `${keyPrefix}.LastAuthUser`;
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     if (storage.getItem(lastUserKey)) {
       this.username = storage.getItem(lastUserKey);
@@ -856,6 +886,9 @@ export default class CognitoUser {
       AuthParameters: authParameters,
     }, (err, authResult) => {
       if (err) {
+        if (err.code === 'NotAuthorizedException') {
+          this.clearCachedTokens();
+        }
         return callback(err, null);
       }
       if (authResult) {
@@ -882,7 +915,7 @@ export default class CognitoUser {
     const refreshTokenKey = `${keyPrefix}.${this.username}.refreshToken`;
     const lastUserKey = `${keyPrefix}.LastAuthUser`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     storage.setItem(idTokenKey, this.signInUserSession.getIdToken().getJwtToken());
     storage.setItem(accessTokenKey, this.signInUserSession.getAccessToken().getJwtToken());
@@ -900,7 +933,7 @@ export default class CognitoUser {
     const randomPasswordKey = `${keyPrefix}.randomPasswordKey`;
     const deviceGroupKeyKey = `${keyPrefix}.deviceGroupKey`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     storage.setItem(deviceKeyKey, this.deviceKey);
     storage.setItem(randomPasswordKey, this.randomPassword);
@@ -917,7 +950,7 @@ export default class CognitoUser {
     const randomPasswordKey = `${keyPrefix}.randomPasswordKey`;
     const deviceGroupKeyKey = `${keyPrefix}.deviceGroupKey`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     if (storage.getItem(deviceKeyKey)) {
       this.deviceKey = storage.getItem(deviceKeyKey);
@@ -936,7 +969,7 @@ export default class CognitoUser {
     const randomPasswordKey = `${keyPrefix}.randomPasswordKey`;
     const deviceGroupKeyKey = `${keyPrefix}.deviceGroupKey`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     storage.removeItem(deviceKeyKey);
     storage.removeItem(randomPasswordKey);
@@ -954,7 +987,7 @@ export default class CognitoUser {
     const refreshTokenKey = `${keyPrefix}.${this.username}.refreshToken`;
     const lastUserKey = `${keyPrefix}.LastAuthUser`;
 
-    const storage = window.sessionStorage;
+    const storage = new StorageHelper().getStorage();
 
     storage.removeItem(idTokenKey);
     storage.removeItem(accessTokenKey);
@@ -1039,7 +1072,7 @@ export default class CognitoUser {
    */
   getAttributeVerificationCode(attributeName, callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('getUserAttributeVerificationCode', {
@@ -1065,7 +1098,7 @@ export default class CognitoUser {
    */
   verifyAttribute(attributeName, confirmationCode, callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('verifyUserAttribute', {
@@ -1090,7 +1123,7 @@ export default class CognitoUser {
    */
   getDevice(callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('getDevice', {
@@ -1106,6 +1139,31 @@ export default class CognitoUser {
   }
 
   /**
+   * This is used to forget a specific device
+   * @param {string} deviceKey Device key.
+   * @param {object} callback Result callback map.
+   * @param {onFailure} callback.onFailure Called on any error.
+   * @param {onSuccess<string>} callback.onSuccess Called on success.
+   * @returns {void}
+   */
+  forgetSpecificDevice(deviceKey, callback) {
+    if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
+      return callback.onFailure(new Error('User is not authenticated'));
+    }
+
+    this.client.makeUnauthenticatedRequest('forgetDevice', {
+      AccessToken: this.signInUserSession.getAccessToken().getJwtToken(),
+      DeviceKey: deviceKey,
+    }, err => {
+      if (err) {
+        return callback.onFailure(err);
+      }
+      return callback.onSuccess('SUCCESS');
+    });
+    return undefined;
+  }
+
+  /**
    * This is used to forget the current device
    * @param {object} callback Result callback map.
    * @param {onFailure} callback.onFailure Called on any error.
@@ -1113,24 +1171,16 @@ export default class CognitoUser {
    * @returns {void}
    */
   forgetDevice(callback) {
-    if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
-    }
-
-    this.client.makeUnauthenticatedRequest('forgetDevice', {
-      AccessToken: this.signInUserSession.getAccessToken().getJwtToken(),
-      DeviceKey: this.deviceKey,
-    }, err => {
-      if (err) {
-        return callback.onFailure(err);
-      }
-      this.deviceKey = null;
-      this.deviceGroupkey = null;
-      this.randomPassword = null;
-      this.clearCachedDeviceKeyAndPassword();
-      return callback.onSuccess('SUCCESS');
+    this.forgetSpecificDevice(this.deviceKey, {
+      onFailure: callback.onFailure,
+      onSuccess: result => {
+        this.deviceKey = null;
+        this.deviceGroupKey = null;
+        this.randomPassword = null;
+        this.clearCachedDeviceKeyAndPassword();
+        return callback.onSuccess(result);
+      },
     });
-    return undefined;
   }
 
   /**
@@ -1142,7 +1192,7 @@ export default class CognitoUser {
    */
   setDeviceStatusRemembered(callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('updateDeviceStatus', {
@@ -1167,7 +1217,7 @@ export default class CognitoUser {
    */
   setDeviceStatusNotRemembered(callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('updateDeviceStatus', {
@@ -1195,7 +1245,7 @@ export default class CognitoUser {
    */
   listDevices(limit, paginationToken, callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('listDevices', {
@@ -1220,7 +1270,7 @@ export default class CognitoUser {
    */
   globalSignOut(callback) {
     if (this.signInUserSession == null || !this.signInUserSession.isValid()) {
-      return callback(new Error('User is not authenticated'), null);
+      return callback.onFailure(new Error('User is not authenticated'));
     }
 
     this.client.makeUnauthenticatedRequest('globalSignOut', {

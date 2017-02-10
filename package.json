@@ -1,7 +1,7 @@
 {
   "name": "amazon-cognito-identity-js",
   "description": "Amazon Cognito Identity Provider JavaScript SDK",
-  "version": "1.7.0",
+  "version": "1.13.0",
   "author": {
     "name": "Amazon Web Services",
     "email": "aws@amazon.com",
@@ -10,6 +10,11 @@
   "homepage": "http://aws.amazon.com/cognito",
   "contributors": [
     "Simon Buchan with Skilitics",
+    "Jonathan Goldwasser",
+    "Matt Durant",
+    "John Ferlito",
+    "Michael Hart",
+    "Chetan Mehta <chetam@amazon.com>",
     "Ionut Trestian <trestian@amazon.com>"
   ],
   "repository": {
@@ -35,10 +40,10 @@
     "lint": "eslint src"
   },
   "main": "dist/amazon-cognito-identity.min.js",
+  "types": "./index.d.ts",
   "dependencies": {
     "aws-sdk": "^2.6.0",
-    "jsbn": "^0.1.0",
-    "sjcl": "^1.0.3"
+    "jsbn": "^0.1.0"
   },
   "devDependencies": {
     "babel-core": "^6.13.2",
