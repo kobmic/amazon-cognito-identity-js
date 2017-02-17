@@ -30,7 +30,7 @@ declare module "amazon-cognito-identity-js" {
         public setAuthenticationFlowType(authenticationFlowType: string): string;
 
         public getSession(callback: Function): any;
-        public refreshSession(refreshToken: CognitoRefreshToken, callback: (err: any, result: any) => void);
+        public refreshSession(refreshToken: CognitoRefreshToken, callback: (err: any, result: any) => void): void;
         public authenticateUser(params: any, callbacks: {onSuccess: (session: CognitoUserSession) => void, onFailure: (err: any) => void, newPasswordRequired: (userAttributes: any, requiredAttributes: any) => void, mfaRequired: (challengeName: any, challengeParameters: any) => void, customChallenge: (challengeParameters: any) => void}): void;
         public confirmRegistration(code: string, forceAliasCreation: boolean, callback: (err: any, result: any) => void): void;
         public resendConfirmationCode(callback: (err: any, result: any) => void): void;
@@ -44,6 +44,19 @@ declare module "amazon-cognito-identity-js" {
 
         public signOut(): void;
         public globalSignOut(callbacks: {onSuccess: (msg: string) => void, onFailure: (err: Error) => void}): void;
+
+        public updateAttributes(attr: (CognitoUserAttribute | { Name: string, Value: string })[], callback: (err: any, result: string) => void): void;
+        public verifyAttribute(attributeName: string, confirmationCode: string, callback: {
+            onFailure: (err: any) => void,
+            onSuccess: (res: string) => void
+        }): void;
+        public getUserAttributes(callback: (err: any, result: CognitoUserAttribute[]) => void): void;
+        public deleteUser(callback: (err: any, result: string) => void): void;
+        public enableMFA(callback: (err: any, result: string) => void): void;
+        public getAttributeVerificationCode(attributeName: string, callback: {
+            onFailure: (err: any) => void,
+            inputVerificationCode: (data: any) => void
+        }): void;
     }
 
     export interface ICognitoUserAttribute {
