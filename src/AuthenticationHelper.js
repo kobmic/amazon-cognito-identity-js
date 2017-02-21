@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import { util } from 'aws-sdk';
+import { util } from 'aws-sdk/global';
 import { BigInteger } from 'jsbn';
 
 const initN = 'FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1'
@@ -236,7 +236,7 @@ export default class AuthenticationHelper {
 
     const hkdf = this.computehkdf(
       new util.Buffer(this.padHex(sValue), 'hex'),
-      new util.Buffer(this.padHex(this.UHexHash), 'hex'));
+      new util.Buffer(this.padHex(this.UValue.toString(16)), 'hex'));
 
     return hkdf;
   }
@@ -251,7 +251,7 @@ export default class AuthenticationHelper {
 
   /**
    * Converts a BigInteger (or hex string) to hex format padded with zeroes for hashing
-   * @param {BigInteger|String} Number or string to pad.
+   * @param {BigInteger|String} bigInt Number or string to pad.
    * @returns {String} Padded hex string.
    */
   padHex(bigInt) {
